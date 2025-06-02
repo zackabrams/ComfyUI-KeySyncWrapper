@@ -126,8 +126,24 @@ import numpy as np
 from PIL import Image
 import soundfile as sf
 
-# Import our infer wrapper
-import infer
+# ----------------------------
+# Dynamically load infer.py
+# ----------------------------
+def _load_infer_module():
+    """
+    Load infer.py via importlib so we avoid 'import infer' failures.
+    """
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "infer.py")
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"Could not find infer.py at {path}")
+    spec = importlib.util.spec_from_file_location("keysync_infer", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+infer = _load_infer_module()
+
 
 # ----------------------------
 # KeySyncWrapper node
@@ -161,7 +177,7 @@ class KeySyncWrapper:
         """
         1. ‘frames’: Tensor [N,H,W,3], dtype=float32 (0..1)
         2. ‘audio’: dict { "waveform": Tensor[1×T], "sample_rate": int }
-        3. We write a temp MP4 & WAV, call KeySync’s infer_raw.sh, then read PNGs back.
+        3. Write a temp MP4 & WAV, call KeySync’s infer_raw.sh, then read PNGs back.
         4. Return a single Tensor [N,H,W,3] float32 (0..1).
         """
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -287,9 +303,5 @@ class KeySyncWrapper:
 
 # Register this node for ComfyUI
 NODE_CLASS_MAPPINGS = {
-    "KeySyncWrapper": KeySyncWrapper
-}
-
-NODE_DISPLAY_NAME_MAPPINGS = {
     "KeySyncWrapper": KeySyncWrapper
 }
