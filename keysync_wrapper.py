@@ -1,235 +1,242 @@
 import os
-import sys
-import torch
-import numpy as np
-import cv2
-from pathlib import Path
 import subprocess
-import tempfile
-import shutil
+import json
+import logging
+import math
+from typing import Dict, Any, Optional
 
-# Add KeySync to path - this assumes KeySync is installed or cloned
-try:
-    from keysync import KeySync
-    KEYSYNC_AVAILABLE = True
-except ImportError:
-    print("KeySync not found. Installing...")
-    KEYSYNC_AVAILABLE = False
-
-
-class KeySyncProcessor:
+class KeySyncCLIWrapper:
     """
-    Wrapper class for KeySync processing
+    Wrapper around KeySync's CLI scripts - uses actual upstream code with correct flags
     """
     
-    def __init__(self, device="auto", model_path=None):
-        self.device = self._get_device(device)
-        self.model = None
-        self.model_path = model_path
-        self._ensure_keysync()
-        self._load_model()
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.keysync_dir = config['keysync_path']
+        self.models_dir = config['models_path']
+        self._validate_installation()
     
-    def _get_device(self, device):
-        """Determine the best device to use"""
-        if device == "auto":
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        return device
+    def _validate_installation(self):
+        """Verify KeySync is properly installed"""
+        required_files = [
+            'scripts/inference.sh',
+            'model/keyframes.py',
+            'model/interpolation.py'
+        ]
+        
+        for file_path in required_files:
+            full_path = os.path.join(self.keysync_dir, file_path)
+            if not os.path.exists(full_path):
+                raise FileNotFoundError(f"KeySync installation incomplete: {full_path}")
+        
+        # Check for model files
+        model_files = ['keyframe_dub.pt', 'interpolation_dub.pt']
+        for model_file in model_files:
+            model_path = os.path.join(self.models_dir, model_file)
+            if not os.path.exists(model_path):
+                raise FileNotFoundError(f"KeySync model not found: {model_path}")
     
-    def _ensure_keysync(self):
-        """Ensure KeySync is available"""
-        global KEYSYNC_AVAILABLE
-        
-        if not KEYSYNC_AVAILABLE:
-            try:
-                self._install_keysync()
-                from keysync import KeySync
-                KEYSYNC_AVAILABLE = True
-            except Exception as e:
-                raise ImportError(f"Failed to install or import KeySync: {e}")
-    
-    def _install_keysync(self):
-        """Install KeySync if not available"""
-        import subprocess
-        import sys
-        
-        # Clone KeySync repository
-        keysync_dir = os.path.join(os.path.dirname(__file__), "keysync")
-        
-        if not os.path.exists(keysync_dir):
-            print("Cloning KeySync repository...")
-            subprocess.run([
-                "git", "clone", 
-                "https://github.com/antonibigata/keysync.git",
-                keysync_dir
-            ], check=True)
-        
-        # Add to Python path
-        if keysync_dir not in sys.path:
-            sys.path.insert(0, keysync_dir)
-        
-        # Install requirements
-        requirements_file = os.path.join(keysync_dir, "requirements.txt")
-        if os.path.exists(requirements_file):
-            subprocess.run([
-                sys.executable, "-m", "pip", "install", 
-                "-r", requirements_file
-            ], check=True)
-    
-    def _load_model(self):
-        """Load the KeySync model"""
+    def process_lipsync(self, video_path: str, audio_path: str, 
+                       output_dir: str, face_enhance: bool = True) -> str:
+        """
+        Run KeySync lip synchronization using the actual CLI with correct flags
+        """
         try:
-            # This is a placeholder - adapt to actual KeySync model loading
-            from keysync import KeySync
-            self.model = KeySync(device=self.device)
-            print(f"KeySync model loaded on {self.device}")
-        except Exception as e:
-            print(f"Failed to load KeySync model: {e}")
-            self.model = None
-    
-    def process(self, source_video, target_video, audio, output_path, 
-                face_enhance=True, face_enhance_model="gfpgan", 
-                batch_size=8, quality="medium", mask=None, **kwargs):
-        """
-        Process video with KeySync
-        
-        Args:
-            source_video: Path to source video
-            target_video: Path to target video  
-            audio: Path to audio file
-            output_path: Path for output video
-            face_enhance: Whether to enhance faces
-            face_enhance_model: Model for face enhancement
-            batch_size: Batch size for processing
-            quality: Quality setting
-            mask: Optional mask
-            **kwargs: Additional parameters
+            # Step 1: Merge audio back into video for KeySync's single-file approach
+            merged_input = os.path.join(output_dir, "merged_input.mp4")
+            self._merge_video_audio(video_path, audio_path, merged_input)
             
-        Returns:
-            Path to output video
-        """
-        
-        if self.model is None:
-            raise RuntimeError("KeySync model not loaded")
-        
-        try:
-            # Prepare arguments for KeySync
-            args = {
-                'source': source_video,
-                'target': target_video, 
-                'audio': audio,
-                'output': output_path,
-                'device': self.device,
-                'batch_size': batch_size,
-                'enhance': face_enhance,
-                'enhancer': face_enhance_model if face_enhance else None,
-                'quality': quality,
-            }
+            # Step 2: Create filelist.txt as required by inference.sh
+            filelist_path = self._create_filelist(merged_input, output_dir)
             
-            # Add additional kwargs
-            args.update(kwargs)
+            # Step 3: Set up output subdirectory
+            keysync_output_dir = os.path.join(output_dir, "keysync_output")
+            os.makedirs(keysync_output_dir, exist_ok=True)
             
-            # Process with KeySync - adapt this to actual KeySync API
-            result = self.model.process(**args)
-            
-            if os.path.exists(output_path):
-                return output_path
-            else:
-                raise RuntimeError("KeySync processing failed - no output generated")
-                
-        except Exception as e:
-            print(f"KeySync processing error: {e}")
-            raise e
-    
-    def process_frames(self, source_frames, target_frames, audio_array, 
-                      fps=25.0, **kwargs):
-        """
-        Process frames directly without file I/O
-        
-        Args:
-            source_frames: List of source frames (numpy arrays)
-            target_frames: List of target frames (numpy arrays)  
-            audio_array: Audio data as numpy array
-            fps: Frames per second
-            **kwargs: Additional parameters
-            
-        Returns:
-            List of processed frames, processed audio
-        """
-        
-        with tempfile.TemporaryDirectory() as temp_dir:
-            # Save temporary files
-            source_path = os.path.join(temp_dir, "source.mp4")
-            target_path = os.path.join(temp_dir, "target.mp4")
-            audio_path = os.path.join(temp_dir, "audio.wav")
-            output_path = os.path.join(temp_dir, "output.mp4")
-            
-            # Convert frames to video
-            self._frames_to_video(source_frames, source_path, fps)
-            self._frames_to_video(target_frames, target_path, fps)
-            self._array_to_audio(audio_array, audio_path)
-            
-            # Process
-            result_path = self.process(
-                source_path, target_path, audio_path, output_path, **kwargs
+            # Step 4: Build correct CLI command matching actual KeySync usage
+            cmd = self._build_inference_command(
+                filelist_path, keysync_output_dir, face_enhance
             )
             
-            # Load result
-            result_frames = self._video_to_frames(result_path)
-            result_audio = self._audio_to_array(result_path)
+            # Step 5: Execute KeySync CLI
+            result = subprocess.run(
+                cmd,
+                cwd=self.keysync_dir,
+                capture_output=True,
+                text=True,
+                timeout=600  # 10 minute timeout for longer videos
+            )
             
-            return result_frames, result_audio
+            if result.returncode != 0:
+                logging.error(f"KeySync CLI stderr: {result.stderr}")
+                logging.error(f"KeySync CLI stdout: {result.stdout}")
+                raise RuntimeError(f"KeySync processing failed: {result.stderr}")
+            
+            # Step 6: Locate the final output file
+            final_output = self._find_final_output(keysync_output_dir, merged_input)
+            
+            if not os.path.exists(final_output):
+                raise FileNotFoundError(f"KeySync output not found: {final_output}")
+            
+            logging.info(f"KeySync processing completed: {final_output}")
+            return final_output
+            
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("KeySync processing timed out")
+        except Exception as e:
+            logging.error(f"KeySync wrapper error: {e}")
+            raise e
     
-    def _frames_to_video(self, frames, output_path, fps):
-        """Convert frame list to video file"""
-        if not frames:
-            raise ValueError("No frames provided")
-        
-        height, width = frames[0].shape[:2]
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-        
-        for frame in frames:
-            if frame.dtype != np.uint8:
-                frame = (frame * 255).astype(np.uint8)
-            writer.write(frame)
-        
-        writer.release()
-    
-    def _array_to_audio(self, audio_array, output_path, sample_rate=22050):
-        """Convert audio array to audio file"""
-        import torchaudio
-        
-        if isinstance(audio_array, np.ndarray):
-            audio_tensor = torch.from_numpy(audio_array)
-        else:
-            audio_tensor = audio_array
-        
-        if len(audio_tensor.shape) == 1:
-            audio_tensor = audio_tensor.unsqueeze(0)
-        
-        torchaudio.save(output_path, audio_tensor, sample_rate)
-    
-    def _video_to_frames(self, video_path):
-        """Convert video file to frame list"""
-        cap = cv2.VideoCapture(video_path)
-        frames = []
-        
-        while True:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frames.append(frame)
-        
-        cap.release()
-        return frames
-    
-    def _audio_to_array(self, video_path):
-        """Extract audio from video as array"""
-        import torchaudio
+    def _merge_video_audio(self, video_path: str, audio_path: str, output_path: str):
+        """
+        Merge separate video and audio files into single MP4 for KeySync
+        """
+        ffmpeg_cmd = [
+            'ffmpeg', '-y',  # Overwrite output
+            '-i', video_path,
+            '-i', audio_path,
+            '-c:v', 'copy',  # Copy video stream as-is
+            '-c:a', 'aac',   # Encode audio as AAC
+            '-shortest',     # Match shortest stream duration
+            output_path
+        ]
         
         try:
-            audio, sample_rate = torchaudio.load(video_path)
-            return audio
+            result = subprocess.run(
+                ffmpeg_cmd,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            logging.info(f"Successfully merged video+audio: {output_path}")
+        except subprocess.CalledProcessError as e:
+            logging.error(f"FFmpeg merge failed: {e.stderr}")
+            raise RuntimeError(f"Failed to merge video and audio: {e.stderr}")
+        except FileNotFoundError:
+            raise RuntimeError("FFmpeg not found. Please install FFmpeg.")
+    
+    def _create_filelist(self, merged_video_path: str, output_dir: str) -> str:
+        """
+        Create filelist.txt as required by KeySync's inference.sh
+        """
+        filelist_path = os.path.join(output_dir, "filelist.txt")
+        
+        try:
+            with open(filelist_path, 'w') as f:
+                f.write(f"{merged_video_path}\n")
+            
+            logging.info(f"Created filelist: {filelist_path}")
+            return filelist_path
+            
         except Exception as e:
-            print(f"Failed to extract audio: {e}")
-            return torch.zeros(1, 22050)  # 1 second of silence
+            raise RuntimeError(f"Failed to create filelist: {e}")
+    
+    def _build_inference_command(self, filelist_path: str, output_folder: str, 
+                                face_enhance: bool) -> list:
+        """
+        Build the actual KeySync CLI command with correct flags
+        """
+        # Compute video duration for --compute_until flag
+        duration = self._compute_video_duration(filelist_path)
+        
+        cmd = [
+            'bash', 
+            os.path.join(self.keysync_dir, 'scripts', 'inference.sh'),
+            '--file_list', filelist_path,
+            '--output_folder', output_folder,
+            '--keyframes_ckpt', os.path.join(self.models_dir, 'keyframe_dub.pt'),
+            '--interpolation_ckpt', os.path.join(self.models_dir, 'interpolation_dub.pt'),
+            '--compute_until', str(duration)
+        ]
+        
+        if face_enhance:
+            cmd.extend(['--face_enhance', 'true'])
+        
+        logging.info(f"KeySync command: {' '.join(cmd)}")
+        return cmd
+    
+    def _compute_video_duration(self, filelist_path: str) -> int:
+        """
+        Compute video duration from the first file in filelist for --compute_until
+        """
+        try:
+            # Read first video from filelist
+            with open(filelist_path, 'r') as f:
+                video_path = f.readline().strip()
+            
+            if not video_path:
+                return 10  # Default fallback
+            
+            # Use ffprobe to get duration
+            ffprobe_cmd = [
+                'ffprobe', 
+                '-v', 'quiet', 
+                '-print_format', 'json',
+                '-show_format', 
+                '-show_streams', 
+                video_path
+            ]
+            
+            result = subprocess.run(
+                ffprobe_cmd,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            info = json.loads(result.stdout)
+            
+            # Try to get duration from format section first
+            if 'format' in info and 'duration' in info['format']:
+                duration_seconds = float(info['format']['duration'])
+                return int(math.ceil(duration_seconds))
+            
+            # Fallback: check video stream duration
+            for stream in info.get('streams', []):
+                if stream.get('codec_type') == 'video' and 'duration' in stream:
+                    duration_seconds = float(stream['duration'])
+                    return int(math.ceil(duration_seconds))
+            
+            logging.warning("Could not determine video duration, using default")
+            return 10
+            
+        except subprocess.CalledProcessError as e:
+            logging.error(f"ffprobe failed: {e.stderr}")
+            return 10
+        except (json.JSONDecodeError, FileNotFoundError, Exception) as e:
+            logging.error(f"Duration computation failed: {e}")
+            return 10
+    
+    def _find_final_output(self, keysync_output_dir: str, merged_input_path: str) -> str:
+        """
+        Locate the final.mp4 output from KeySync's directory structure
+        
+        KeySync creates: output_folder/video_basename/final.mp4
+        """
+        # Get basename without extension for subdirectory name
+        video_basename = os.path.splitext(os.path.basename(merged_input_path))[0]
+        
+        # KeySync creates a subdirectory named after the input video
+        expected_subdir = os.path.join(keysync_output_dir, video_basename)
+        expected_final = os.path.join(expected_subdir, "final.mp4")
+        
+        if os.path.exists(expected_final):
+            return expected_final
+        
+        # Fallback: search for any final.mp4 in output directory
+        for root, dirs, files in os.walk(keysync_output_dir):
+            for file in files:
+                if file == "final.mp4":
+                    fallback_path = os.path.join(root, file)
+                    logging.warning(f"Using fallback final.mp4 location: {fallback_path}")
+                    return fallback_path
+        
+        # Last resort: search for any .mp4 file
+        for root, dirs, files in os.walk(keysync_output_dir):
+            for file in files:
+                if file.endswith(".mp4"):
+                    fallback_path = os.path.join(root, file)
+                    logging.warning(f"Using fallback MP4 file: {fallback_path}")
+                    return fallback_path
+        
+        raise FileNotFoundError(f"No output video found in {keysync_output_dir}")
