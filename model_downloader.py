@@ -149,10 +149,13 @@ class KeySyncModelDownloader:
     
     def _validate_setup(self, config):
         """Validate that KeySync is properly set up"""
+        from .preprocessing import check_ffmpeg_availability, check_ffprobe_availability
+        
         # Check repository files
         required_files = [
             'model/keyframes.py',
-            'model/interpolation.py'
+            'model/interpolation.py',
+            'scripts/inference.sh'
         ]
         
         for file_path in required_files:
@@ -166,5 +169,12 @@ class KeySyncModelDownloader:
             model_path = os.path.join(config['models_path'], model_file)
             if not os.path.exists(model_path):
                 raise FileNotFoundError(f"Missing model file: {model_file}")
+        
+        # Check system dependencies
+        if not check_ffmpeg_availability():
+            raise RuntimeError("FFmpeg not found. Please install FFmpeg and ensure it's in your PATH.")
+        
+        if not check_ffprobe_availability():
+            raise RuntimeError("FFprobe not found. Please install FFmpeg (includes FFprobe).")
         
         logging.info("KeySync validation passed")
