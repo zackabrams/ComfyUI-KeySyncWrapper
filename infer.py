@@ -2,31 +2,15 @@
 """
 infer.py
 
-A thin Python wrapper around KeySync’s existing shell-based inference pipeline.
-It simply invokes `scripts/infer_raw.sh` with the correct arguments, so that we
-make zero changes to KeySync’s original code.
-
-Usage example (from another Python file):
-    from infer import run_inference
-    run_inference(
-        video_dir="data/videos",
-        audio_dir="data/audios",
-        output_dir="my_output_folder",
-        keyframe_ckpt="pretrained_models/keyframe_dub.pt",
-        interpolation_ckpt="pretrained_models/interpolation_dub.pt",
-        compute_until=45,
-        fix_occlusion=False,
-        position=None,
-        start_frame=0
-    )
+Thin wrapper around KeySync’s own `scripts/infer_raw.sh`.
+We do NOT modify any KeySync code—just forward arguments exactly as upstream expects.
 """
 
-import argparse
 import os
 import subprocess
-import sys
+import argparse
 
-# 1) Locate the KeySync root (assumes this infer.py sits at the same level as keysync/)
+# 1) Locate the KeySync root (assumes infer.py sits alongside a subfolder “keysync/”)
 _THIS_DIR = os.path.dirname(os.path.realpath(__file__))
 _KEYSYNC_ROOT = os.path.join(_THIS_DIR, "keysync")
 _SCRIPTS_DIR = os.path.join(_KEYSYNC_ROOT, "scripts")
@@ -45,49 +29,39 @@ def run_inference(
     start_frame: int = 0
 ) -> None:
     """
-    Invokes KeySync’s existing `infer_raw.sh` script with exactly the flags KeySync expects.
-    This ensures minimal changes to upstream code.
+    Calls KeySync’s infer_raw.sh script with exactly the flags it expects.
 
     Args:
-      video_dir: Folder containing input .mp4 files (e.g. "data/videos")
-      audio_dir: Folder containing input .wav files (e.g. "data/audios")
-      output_dir: Where to write generated frames (will be created if needed)
-      keyframe_ckpt: Path to KeySync’s keyframe checkpoint (.pt)
-      interpolation_ckpt: Path to KeySync’s interpolation checkpoint (.pt)
-      compute_until: Number of seconds of video to process (default: 45)
-      fix_occlusion: If True, pass "--fix_occlusion" to the script
-      position: Optional "x,y" string for the occlusion mask
-      start_frame: Frame index at which to start occlusion (default: 0)
-
-    Raises:
-      FileNotFoundError if infer_raw.sh is missing
-      RuntimeError if the underlying shell call fails
+      video_dir: Directory containing input .mp4 (e.g., run_dir with input.mp4)
+      audio_dir: Directory containing input .wav (e.g., run_dir with input.wav)
+      output_dir: Directory where KeySync will place output PNG frames
+      keyframe_ckpt: Path to keyframe_dub.pt
+      interpolation_ckpt: Path to interpolation_dub.pt
+      compute_until: Number of seconds to process
+      fix_occlusion: If True, pass `--fix_occlusion`
+      position: Optional x,y for occlusion
+      start_frame: Frame index to start occlusion
     """
-    # 1) Verify that infer_raw.sh exists
     if not os.path.isfile(_INFER_SCRIPT):
-        raise FileNotFoundError(
-            f"KeySync’s infer_raw.sh not found at {_INFER_SCRIPT}"
-        )
+        raise FileNotFoundError(f"KeySync’s infer_raw.sh not found at {_INFER_SCRIPT}")
 
-    # 2) Make all provided paths absolute
+    # Absolute paths
     video_dir = os.path.abspath(video_dir)
     audio_dir = os.path.abspath(audio_dir)
     output_dir = os.path.abspath(output_dir)
     keyframe_ckpt = os.path.abspath(keyframe_ckpt)
     interpolation_ckpt = os.path.abspath(interpolation_ckpt)
 
-    # 3) Build the command list
     cmd = [
         "/usr/bin/env", "bash", _INFER_SCRIPT,
-        "--filelist",     video_dir,
-        "--file_list_audio", audio_dir,
-        "--output_folder",  output_dir,
-        "--keyframes_ckpt", keyframe_ckpt,
+        "--filelist",           video_dir,
+        "--file_list_audio",    audio_dir,
+        "--output_folder",      output_dir,
+        "--keyframes_ckpt",     keyframe_ckpt,
         "--interpolation_ckpt", interpolation_ckpt,
-        "--compute_until", str(compute_until)
+        "--compute_until",      str(compute_until)
     ]
 
-    # 4) Optionally add occlusion flags, exactly as KeySync expects
     if fix_occlusion:
         cmd.append("--fix_occlusion")
     if position is not None:
@@ -95,61 +69,27 @@ def run_inference(
     if start_frame != 0:
         cmd.extend(["--start_frame", str(start_frame)])
 
-    # 5) Run the subprocess inside keysync/ directory, keeping current env
     print(f"[KeySync Wrapper] Running: {' '.join(cmd)}")
     proc = subprocess.run(cmd, cwd=_KEYSYNC_ROOT, env=os.environ.copy())
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"KeySync inference failed with exit code {proc.returncode}"
-        )
-
-    print(f"[KeySync Wrapper] Inference complete. Output at: {output_dir}")
+        raise RuntimeError(f"KeySync inference failed with exit code {proc.returncode}")
+    print(f"[KeySync Wrapper] Inference complete. Outputs at: {output_dir}")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Minimal wrapper for KeySync’s infer_raw.sh"
-    )
-    parser.add_argument(
-        "--video_dir", required=True,
-        help="Folder containing input .mp4 files (e.g. data/videos)"
-    )
-    parser.add_argument(
-        "--audio_dir", required=True,
-        help="Folder containing input .wav files (e.g. data/audios)"
-    )
-    parser.add_argument(
-        "--output_dir", required=True,
-        help="Output folder for generated frames"
-    )
-    parser.add_argument(
-        "--keyframes_ckpt", required=True,
-        help="Path to KeySync keyframe checkpoint (.pt)"
-    )
-    parser.add_argument(
-        "--interpolation_ckpt", required=True,
-        help="Path to KeySync interpolation checkpoint (.pt)"
-    )
-    parser.add_argument(
-        "--compute_until", type=int, default=45,
-        help="Number of seconds of video to process (default: 45)"
-    )
-    parser.add_argument(
-        "--fix_occlusion", action="store_true",
-        help="Enable occlusion handling (adds --fix_occlusion)"
-    )
-    parser.add_argument(
-        "--position", type=str, default=None,
-        help="Optional x,y for occlusion mask (e.g. '450,450')"
-    )
-    parser.add_argument(
-        "--start_frame", type=int, default=0,
-        help="Frame index at which to apply occlusion mask (default: 0)"
-    )
+    parser = argparse.ArgumentParser(description="Thin wrapper for KeySync’s infer_raw.sh")
+    parser.add_argument("--video_dir", required=True, help="Directory containing input .mp4 files")
+    parser.add_argument("--audio_dir", required=True, help="Directory containing input .wav files")
+    parser.add_argument("--output_dir", required=True, help="Directory for output PNG frames")
+    parser.add_argument("--keyframes_ckpt", required=True, help="Path to keyframe_dub.pt")
+    parser.add_argument("--interpolation_ckpt", required=True, help="Path to interpolation_dub.pt")
+    parser.add_argument("--compute_until", type=int, default=45, help="Seconds of video to process")
+    parser.add_argument("--fix_occlusion", action="store_true", help="Enable occlusion handling")
+    parser.add_argument("--position", type=str, default=None, help="Optional x,y for occlusion mask")
+    parser.add_argument("--start_frame", type=int, default=0, help="Frame index where occlusion starts")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
-
     run_inference(
         video_dir=args.video_dir,
         audio_dir=args.audio_dir,
