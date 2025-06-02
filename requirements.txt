@@ -1,0 +1,21 @@
+# Core PyTorch
+torch>=1.9.0
+torchvision>=0.10.0
+numpy>=1.21.0
+
+# Video/Audio processing
+opencv-python>=4.5.0
+soundfile>=0.12.0
+librosa>=0.9.0
+
+# HuggingFace ecosystem
+huggingface-hub>=0.16.0
+transformers>=4.20.0
+accelerate>=0.20.0
+
+# System dependencies that KeySync needs
+subprocess32; sys_platform != "win32"
+
+# Additional utilities
+tqdm>=4.64.0
+pillow>=8.3.0
