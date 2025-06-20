@@ -130,14 +130,14 @@ import soundfile as sf
 infer = None
 
 def _get_infer_module():
-    """Lazily load infer_simple.py when needed."""
+    """Lazily load infer.py when needed."""
     global infer
     if infer is None:
         import importlib.util
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "infer_simple.py")
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "infer.py")
         if not os.path.isfile(path):
-            raise FileNotFoundError(f"Could not find infer_simple.py at {path}")
-        spec = importlib.util.spec_from_file_location("keysync_infer_simple", path)
+            raise FileNotFoundError(f"Could not find infer.py at {path}")
+        spec = importlib.util.spec_from_file_location("keysync_infer", path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         infer = module
@@ -229,10 +229,20 @@ class KeySyncWrapper:
                 print(f"[KeySync Error] {error_msg}")
                 return (frames,)
 
-            # Calculate processing duration
-            num_frames = frames_uint8.shape[0]
-            fps = 25
-            compute_secs = max(int(num_frames / fps), 1)
+            # Calculate processing duration based on actual audio length
+            waveform = audio.get("waveform", None)
+            sr = int(audio.get("sample_rate", 16000))
+            if waveform is not None:
+                audio_samples = waveform.shape[-1]  # Get number of audio samples
+                audio_duration = audio_samples / sr  # Duration in seconds
+                compute_secs = max(int(audio_duration), 1)
+                print(f"[KeySync] Audio duration: {audio_duration:.2f}s ({audio_samples} samples at {sr}Hz)")
+            else:
+                # Fallback to video-based calculation
+                num_frames = frames_uint8.shape[0]
+                fps = 25
+                compute_secs = max(int(num_frames / fps), 1)
+                print(f"[KeySync] Using video-based duration: {compute_secs}s")
 
             print(f"[KeySync] Processing {num_frames} frames ({compute_secs}s) through KeySync...")
             print(f"[KeySync] Video shape: {frames_uint8.shape}")
@@ -240,7 +250,7 @@ class KeySyncWrapper:
 
             # Run KeySync inference
             infer_module = _get_infer_module()
-            infer_module.run_keysync_inference(
+            infer_module.run_inference(
                 video_dir=run_dir,  # Directory containing the filelist files
                 audio_dir=run_dir,  # Directory containing the filelist files
                 output_dir=output_base_dir,  # Base output directory
@@ -378,18 +388,17 @@ class KeySyncWrapper:
 
 
 # ----------------------------
-# KeySyncOptimized Node - For A100-80GB High-VRAM GPUs
+# KeySyncAdvanced Node - For High-VRAM GPUs with Optimization Parameters
 # ----------------------------
-class KeySyncOptimized:
+class KeySyncAdvanced:
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
                 "frames": ("IMAGE",),
                 "audio": ("AUDIO",),
-                "decoding_batch_size": ("INT", {"default": 8, "min": 1, "max": 32, "step": 1}),
+                "decoding_t": ("INT", {"default": 8, "min": 1, "max": 32, "step": 1}),
                 "chunk_size": ("INT", {"default": 4, "min": 1, "max": 16, "step": 1}),
-                "vae_batch_size": ("INT", {"default": 16, "min": 1, "max": 64, "step": 1}),
             },
             "optional": {
                 "compute_until": ("INT", {"default": 45, "min": 1, "max": 300, "step": 1}),
@@ -402,10 +411,10 @@ class KeySyncOptimized:
     FUNCTION = "process"
     CATEGORY = "KeySync"
 
-    def process(self, frames, audio, decoding_batch_size=8, chunk_size=4, vae_batch_size=16, 
+    def process(self, frames, audio, decoding_t=8, chunk_size=4, 
                 compute_until=45, fix_occlusion=False):
         """
-        Optimized KeySync wrapper for high-VRAM GPUs with exposed batch size parameters.
+        Advanced KeySync wrapper for high-VRAM GPUs with exposed optimization parameters.
         """
         # Create run-specific directory
         run_id = str(uuid.uuid4())[:8]
@@ -471,23 +480,34 @@ class KeySyncOptimized:
                 print(f"[KeySync Error] {error_msg}")
                 return (frames,)
 
-            # Calculate processing duration
-            num_frames = frames_uint8.shape[0]
-            fps = 25
-            compute_secs = max(int(num_frames / fps), 1)
+            # Calculate processing duration based on actual audio length
+            waveform = audio.get("waveform", None)
+            sr = int(audio.get("sample_rate", 16000))
+            if waveform is not None:
+                audio_samples = waveform.shape[-1]  # Get number of audio samples
+                audio_duration = audio_samples / sr  # Duration in seconds
+                compute_secs = max(int(audio_duration), 1)
+                print(f"[KeySync Advanced] Audio duration: {audio_duration:.2f}s ({audio_samples} samples at {sr}Hz)")
+            else:
+                # Fallback to video-based calculation
+                num_frames = frames_uint8.shape[0]
+                fps = 25
+                compute_secs = max(int(num_frames / fps), 1)
+                print(f"[KeySync Advanced] Using video-based duration: {compute_secs}s")
+            
             if compute_until and compute_until > 0:
                 compute_secs = min(compute_secs, compute_until)
+                print(f"[KeySync Advanced] Limited by compute_until to: {compute_secs}s")
 
-            print(f"[KeySync Optimized] Processing {num_frames} frames ({compute_secs}s) with optimized settings:")
-            print(f"[KeySync Optimized] - Decoding batch size: {decoding_batch_size}")
-            print(f"[KeySync Optimized] - Chunk size: {chunk_size}")
-            print(f"[KeySync Optimized] - VAE batch size: {vae_batch_size}")
-            print(f"[KeySync Optimized] Video shape: {frames_uint8.shape}")
-            print(f"[KeySync Optimized] Audio shape: {audio['waveform'].shape} at {audio.get('sample_rate', 16000)}Hz")
+            #print(f"[KeySync Advanced] Processing {num_frames} frames ({compute_secs}s) with advanced settings:")
+            print(f"[KeySync Advanced] - Decoding batch size: {decoding_t}")
+            print(f"[KeySync Advanced] - Chunk size: {chunk_size}")
+            print(f"[KeySync Advanced] Video shape: {frames_uint8.shape}")
+            print(f"[KeySync Advanced] Audio shape: {audio['waveform'].shape} at {audio.get('sample_rate', 16000)}Hz")
 
-            # Run optimized KeySync inference
+            # Run KeySync inference with optimization parameters
             infer_module = _get_infer_module()
-            infer_module.run_keysync_inference_optimized(
+            infer_module.run_inference(
                 video_dir=run_dir,  # Directory containing the filelist files
                 audio_dir=run_dir,  # Directory containing the filelist files
                 output_dir=output_base_dir,  # Base output directory
@@ -497,9 +517,8 @@ class KeySyncOptimized:
                 fix_occlusion=fix_occlusion,
                 position=None,
                 start_frame=0,
-                decoding_batch_size=decoding_batch_size,
-                chunk_size=chunk_size,
-                vae_batch_size=vae_batch_size
+                decoding_t=decoding_t,
+                chunk_size=chunk_size
             )
 
             # Load output frames - check multiple possible locations
@@ -517,7 +536,7 @@ class KeySyncOptimized:
                     if f.lower().endswith((".png", ".jpg", ".jpeg"))
                 ])
                 if png_files:
-                    print(f"[KeySync Optimized] Found {len(png_files)} frames in synced_frames directory")
+                    print(f"[KeySync Advanced] Found {len(png_files)} frames in synced_frames directory")
             
             # If no frames in synced_frames, check the base output directory
             if len(png_files) == 0 and os.path.exists(output_base_dir):
@@ -526,12 +545,12 @@ class KeySyncOptimized:
                     if f.lower().endswith((".png", ".jpg", ".jpeg"))
                 ])
                 if png_files:
-                    print(f"[KeySync Optimized] Found {len(png_files)} frames in base output directory")
+                    print(f"[KeySync Advanced] Found {len(png_files)} frames in base output directory")
                     output_frame_dir = output_base_dir  # Update the directory path
             
             if len(png_files) == 0:
-                print(f"[KeySync Optimized] No output frames found in {output_base_dir}")
-                print(f"[KeySync Optimized] Returning original frames")
+                print(f"[KeySync Advanced] No output frames found in {output_base_dir}")
+                print(f"[KeySync Advanced] Returning original frames")
                 return (frames,)
 
             # Convert back to ComfyUI tensor format
@@ -545,12 +564,12 @@ class KeySyncOptimized:
                 img.close()
 
             synced_tensor = torch.stack(loaded_list, dim=0)  # [N,H,W,3]
-            print(f"[KeySync Optimized] Successfully processed {len(loaded_list)} frames with optimized settings")
+            print(f"[KeySync Advanced] Successfully processed {len(loaded_list)} frames with advanced settings")
             
             return (synced_tensor,)
 
         except Exception as e:
-            print(f"[KeySync Optimized Error] {e}")
+            print(f"[KeySync Advanced Error] {e}")
             import traceback
             traceback.print_exc()
             return (frames,)
@@ -561,7 +580,7 @@ class KeySyncOptimized:
                 try:
                     shutil.rmtree(run_dir, ignore_errors=True)
                 except Exception as cleanup_error:
-                    print(f"[KeySync Optimized] Cleanup warning: {cleanup_error}")
+                    print(f"[KeySync Advanced] Cleanup warning: {cleanup_error}")
 
     def _save_video(self, frames, video_path):
         """Save frames as MP4 with fallback options."""
@@ -588,7 +607,7 @@ class KeySyncOptimized:
             imageio.mimsave(video_path, frames, fps=25, codec="h264")
             return
         except Exception as e:
-            print(f"[KeySync Optimized] Video save failed, using PNG sequence fallback: {e}")
+            print(f"[KeySync Advanced] Video save failed, using PNG sequence fallback: {e}")
             # Fallback: save as PNG sequence
             for i, frame in enumerate(frames):
                 frame_path = os.path.join(os.path.dirname(video_path), f"frame_{i:04d}.png")
@@ -614,7 +633,7 @@ class KeySyncOptimized:
         
         # KeySync expects 16kHz audio
         if sr != 16000:
-            print(f"[KeySync Optimized] Resampling audio from {sr}Hz to 16000Hz")
+            print(f"[KeySync Advanced] Resampling audio from {sr}Hz to 16000Hz")
             import torchaudio
             # Convert back to tensor for resampling
             wav_torch = torch.from_numpy(wav_tensor).unsqueeze(0)
@@ -624,16 +643,16 @@ class KeySyncOptimized:
             sr = 16000
         
         sf.write(audio_path, wav_tensor, sr)
-        print(f"[KeySync Optimized] Saved audio: {audio_path} (shape: {wav_tensor.shape}, sr: {sr})")
+        print(f"[KeySync Advanced] Saved audio: {audio_path} (shape: {wav_tensor.shape}, sr: {sr})")
 
 
 # Register nodes
 NODE_CLASS_MAPPINGS = {
     "KeySyncWrapper": KeySyncWrapper,
-    "KeySyncOptimized": KeySyncOptimized
+    "KeySyncAdvanced": KeySyncAdvanced
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "KeySyncWrapper": "KeySync Simple",
-    "KeySyncOptimized": "KeySync Optimized (A100)"
+    "KeySyncAdvanced": "KeySync Advanced"
 }
