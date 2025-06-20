@@ -26,7 +26,9 @@ def run_inference(
     compute_until: int = 45,
     fix_occlusion: bool = False,
     position: str = None,
-    start_frame: int = 0
+    start_frame: int = 0,
+    decoding_t: int = None,
+    chunk_size: int = None
 ) -> None:
     """
     Calls KeySync’s infer_raw.sh script with exactly the flags it expects.
@@ -41,6 +43,8 @@ def run_inference(
       fix_occlusion: If True, pass `--fix_occlusion`
       position: Optional x,y for occlusion
       start_frame: Frame index to start occlusion
+      decoding_t: Number of frames decoded at a time (VRAM usage)
+      chunk_size: Size of chunks for processing (memory management)
     """
     if not os.path.isfile(_INFER_SCRIPT):
         raise FileNotFoundError(f"KeySync’s infer_raw.sh not found at {_INFER_SCRIPT}")
@@ -57,33 +61,51 @@ def run_inference(
     video_path = video_dir
     audio_path = audio_dir
     
-    # Check if video_dir is a directory containing input.mp4
+    # Check if video_dir is a directory containing input.mp4 (look in subdirectories too)
     if os.path.isdir(video_dir):
+        # First check direct path
         video_file = os.path.join(video_dir, "input.mp4")
         if os.path.exists(video_file):
             video_path = video_file
         else:
-            # Fall back to directory (KeySync will scan for .mp4 files)
-            print(f"[KeySync Wrapper] Warning: No input.mp4 found in {video_dir}, passing directory")
+            # Check in videos subdirectory
+            video_file = os.path.join(video_dir, "videos", "input.mp4")
+            if os.path.exists(video_file):
+                video_path = video_file
+            else:
+                # Fall back to directory (KeySync will scan for .mp4 files)
+                print(f"[KeySync Wrapper] Warning: No input.mp4 found in {video_dir} or {video_dir}/videos, passing directory")
     
-    # Check if audio_dir is a directory containing input.wav
+    # Check if audio_dir is a directory containing input.wav (look in subdirectories too) 
     if os.path.isdir(audio_dir):
+        # First check direct path
         audio_file = os.path.join(audio_dir, "input.wav")
         if os.path.exists(audio_file):
             audio_path = audio_file
         else:
-            # Fall back to directory (KeySync will scan for .wav files)
-            print(f"[KeySync Wrapper] Warning: No input.wav found in {audio_dir}, passing directory")
+            # Check in audios subdirectory
+            audio_file = os.path.join(audio_dir, "audios", "input.wav")
+            if os.path.exists(audio_file):
+                audio_path = audio_file
+            else:
+                # Fall back to directory (KeySync will scan for .wav files)
+                print(f"[KeySync Wrapper] Warning: No input.wav found in {audio_dir} or {audio_dir}/audios, passing directory")
 
     cmd = [
         "/usr/bin/env", "bash", _INFER_SCRIPT,
-        "--filelist",           video_path,
+        "--file_list",          video_path,
         "--file_list_audio",    audio_path,
         "--output_folder",      output_dir,
         "--keyframes_ckpt",     keyframe_ckpt,
         "--interpolation_ckpt", interpolation_ckpt,
         "--compute_until",      str(compute_until)
     ]
+    
+    # Add optimization parameters if provided
+    if decoding_t is not None:
+        cmd.extend(["--decoding_t", str(decoding_t)])
+    if chunk_size is not None:
+        cmd.extend(["--chunk_size", str(chunk_size)])
 
     if fix_occlusion:
         cmd.append("--fix_occlusion")
@@ -110,6 +132,8 @@ def main():
     parser.add_argument("--fix_occlusion", action="store_true", help="Enable occlusion handling")
     parser.add_argument("--position", type=str, default=None, help="Optional x,y for occlusion mask")
     parser.add_argument("--start_frame", type=int, default=0, help="Frame index where occlusion starts")
+    parser.add_argument("--decoding_t", type=int, default=None, help="Number of frames decoded at a time")
+    parser.add_argument("--chunk_size", type=int, default=None, help="Size of chunks for processing")
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -122,7 +146,9 @@ def main():
         compute_until=args.compute_until,
         fix_occlusion=args.fix_occlusion,
         position=args.position,
-        start_frame=args.start_frame
+        start_frame=args.start_frame,
+        decoding_t=args.decoding_t,
+        chunk_size=args.chunk_size
     )
 
 
