@@ -51,11 +51,34 @@ def run_inference(
     output_dir = os.path.abspath(output_dir)
     keyframe_ckpt = os.path.abspath(keyframe_ckpt)
     interpolation_ckpt = os.path.abspath(interpolation_ckpt)
+    
+    # KeySync expects either a file path or a directory.
+    # If we're passing directories, we should look for the actual files
+    video_path = video_dir
+    audio_path = audio_dir
+    
+    # Check if video_dir is a directory containing input.mp4
+    if os.path.isdir(video_dir):
+        video_file = os.path.join(video_dir, "input.mp4")
+        if os.path.exists(video_file):
+            video_path = video_file
+        else:
+            # Fall back to directory (KeySync will scan for .mp4 files)
+            print(f"[KeySync Wrapper] Warning: No input.mp4 found in {video_dir}, passing directory")
+    
+    # Check if audio_dir is a directory containing input.wav
+    if os.path.isdir(audio_dir):
+        audio_file = os.path.join(audio_dir, "input.wav")
+        if os.path.exists(audio_file):
+            audio_path = audio_file
+        else:
+            # Fall back to directory (KeySync will scan for .wav files)
+            print(f"[KeySync Wrapper] Warning: No input.wav found in {audio_dir}, passing directory")
 
     cmd = [
         "/usr/bin/env", "bash", _INFER_SCRIPT,
-        "--filelist",           video_dir,
-        "--file_list_audio",    audio_dir,
+        "--filelist",           video_path,
+        "--file_list_audio",    audio_path,
         "--output_folder",      output_dir,
         "--keyframes_ckpt",     keyframe_ckpt,
         "--interpolation_ckpt", interpolation_ckpt,
